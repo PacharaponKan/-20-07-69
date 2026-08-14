@@ -1,0 +1,78 @@
+name: Temporary PoENavi English Windows Build
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out build inputs
+        uses: actions/checkout@v6
+        with:
+          path: build-input
+
+      - name: Check out PoENavi upstream
+        uses: actions/checkout@v6
+        with:
+          repository: buri34/poenavi
+          ref: 043273caece29186e90c109a825dcc34b993745d
+          path: source
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: source/requirements-build.txt
+
+      - name: Restore and apply English-only patch
+        shell: pwsh
+        run: |
+          @'
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          parts = sorted(Path("build-input/ci-input").glob("english.patch.gz.part*.b64"))
+          compressed = b"".join(base64.b64decode(path.read_text()) for path in parts)
+          expected = "60fe9a999d724a07e0ed9f5dca673bb75f5df6fe8f09f08ad022400143ab1149"
+          assert hashlib.sha256(compressed).hexdigest() == expected
+          Path("english.patch").write_bytes(gzip.decompress(compressed))
+          '@ | python -
+          git -C source apply --check ..\english.patch
+          git -C source apply ..\english.patch
+
+      - name: Install dependencies
+        working-directory: source
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Validate and test
+        working-directory: source
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python scripts/validate_locales.py
+          python -m pytest -q
+
+      - name: Build release assets
+        working-directory: source
+        shell: pwsh
+        run: .\scripts\build_release.ps1 -Python python
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v6
+        with:
+          name: PoENavi-English-unsigned-windows
+          path: |
+            source/PoENavi.zip
+            source/PoENavi.zip.sha256
+          if-no-files-found: error
+          retention-days: 1
