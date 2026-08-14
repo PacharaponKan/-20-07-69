@@ -46,9 +46,14 @@ jobs:
           expected = "60fe9a999d724a07e0ed9f5dca673bb75f5df6fe8f09f08ad022400143ab1149"
           assert hashlib.sha256(compressed).hexdigest() == expected
           Path("english.patch").write_bytes(gzip.decompress(compressed))
+          fix = base64.b64decode(Path("build-input/ci-input/test-fix.patch.b64").read_text())
+          assert hashlib.sha256(fix).hexdigest() == "b9b84c06325afec8e3a723a6a9d8c966b3cfc8834dcc63e7090f2cf293396ae4"
+          Path("test-fix.patch").write_bytes(fix)
           '@ | python -
           git -C source apply --check ..\english.patch
           git -C source apply ..\english.patch
+          git -C source apply --check ..\test-fix.patch
+          git -C source apply ..\test-fix.patch
 
       - name: Install dependencies
         working-directory: source
