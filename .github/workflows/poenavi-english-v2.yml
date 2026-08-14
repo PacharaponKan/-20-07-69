@@ -1,0 +1,140 @@
+name: Temporary PoENavi English v2 Windows Build
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out build inputs
+        uses: actions/checkout@v6
+        with:
+          path: build-input
+
+      - name: Check out PoENavi upstream
+        uses: actions/checkout@v6
+        with:
+          repository: buri34/poenavi
+          ref: 043273caece29186e90c109a825dcc34b993745d
+          path: source
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: source/requirements-build.txt
+
+      - name: Restore and apply English-only patch
+        shell: pwsh
+        run: |
+          @'
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          parts = sorted(Path("build-input/ci-input").glob("english-v2.patch.gz.part*"))
+          encoded = "".join(path.read_text(encoding="ascii") for path in parts)
+          compressed = base64.b64decode(encoded)
+          expected = "c21f75bacb820f9c2615637e6a79aaa23ba5a3188a4f60b71782892d4592db53"
+          assert hashlib.sha256(compressed).hexdigest() == expected
+          Path("english-v2.patch").write_bytes(gzip.decompress(compressed))
+          '@ | python -
+          git -C source apply --check ..\english-v2.patch
+          git -C source apply ..\english-v2.patch
+
+      - name: Install dependencies
+        working-directory: source
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Validate English resources and runtime
+        working-directory: source
+        shell: pwsh
+        run: |
+          python scripts/validate_locales.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q `
+            tests/test_english_only_runtime.py `
+            tests/test_i18n.py `
+            tests/test_locale_validation.py `
+            tests/test_localized_resources.py `
+            tests/test_localized_ui.py `
+            tests/test_startup_update_gate.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q tests/test_poetore_parser.py -k english
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q `
+            tests/test_poetore_ui.py::test_trade_action_row_uses_compact_fonts_and_fits_window `
+            tests/test_poetore_ui.py::test_action_cluster_uses_consistent_spacing_at_every_display_size `
+            tests/test_poetore_ui.py::test_english_trade_url_button_opens_result_url
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Smoke-test current APIs
+        working-directory: source
+        shell: pwsh
+        run: |
+          @'
+          from src.poetore import parse_item_text
+          from src.poetore.poe_ninja import PoeNinjaPriceService
+          from src.poetore.trade import available_pc_leagues, _trade_stat_entries
+
+          leagues = available_pc_leagues()
+          league = next(row.id for row in leagues if row.id not in {"Standard", "Hardcore"})
+          stats = _trade_stat_entries()
+          assert len(stats) > 10_000
+          item = parse_item_text("Item Class: Stackable Currency\nRarity: Currency\nChaos Orb\n--------\nStack Size: 1/20\n")
+          price = PoeNinjaPriceService().lookup(item, league)
+          assert price is not None and price.chaos > 0
+          print(f"API smoke test passed: league={league}, stats={len(stats)}, chaos={price.chaos}")
+          '@ | python -
+
+      - name: Build release assets
+        working-directory: source
+        shell: pwsh
+        run: .\scripts\build_release.ps1 -Python python
+
+      - name: Audit portable executable
+        working-directory: source
+        shell: pwsh
+        run: |
+          @'
+          import json
+          import re
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          exe = Path("PoENavi-English.exe")
+          assert exe.read_bytes()[:2] == b"MZ"
+          assert exe.stat().st_size > 20_000_000
+          with ZipFile("PoENavi.zip") as archive:
+              names = [name.replace("\\", "/") for name in archive.namelist()]
+              assert not any(name.endswith("_ja.json") for name in names)
+              for name in names:
+                  if "/data/poetore/" not in f"/{name}" or not name.endswith(".json"):
+                      continue
+                  text = archive.read(name).decode("utf-8")
+                  assert not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text), name
+          print(f"portable exe bytes={exe.stat().st_size}")
+          '@ | python -
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v6
+        with:
+          name: PoENavi-English-v2-unsigned-windows
+          path: |
+            source/PoENavi-English.exe
+            source/PoENavi-English.exe.sha256
+            source/PoENavi.zip
+            source/PoENavi.zip.sha256
+          if-no-files-found: error
+          retention-days: 3
