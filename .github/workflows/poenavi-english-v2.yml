@@ -46,7 +46,7 @@ jobs:
           parts = sorted(Path("build-input/ci-input").glob("english-v2.patch.gz.part*"))
           encoded = "".join(path.read_text(encoding="ascii") for path in parts)
           compressed = base64.b64decode(encoded)
-          expected = "c21f75bacb820f9c2615637e6a79aaa23ba5a3188a4f60b71782892d4592db53"
+          expected = "b2e92cc878947680beeed385e8e397894f2849efba333af2335ede6ca3dacdea"
           assert hashlib.sha256(compressed).hexdigest() == expected
           Path("english-v2.patch").write_bytes(gzip.decompress(compressed))
           '@ | python -
